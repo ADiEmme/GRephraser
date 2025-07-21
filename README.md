@@ -22,6 +22,8 @@ A Windows-only Python application that provides a Grammarly-like overlay for rep
    python main.py
    ```
 
+In alternative, you can execute the dist/grephraser.exe
+
 ## Usage
 - The app runs in the system tray (bottom right of your Windows taskbar).
 - Right-click the tray icon to access the menu:
