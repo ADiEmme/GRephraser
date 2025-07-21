@@ -1,0 +1,7 @@
+pyqt5
+pywin32
+keyboard
+openai
+pyperclip
+mouse
+psutil 
