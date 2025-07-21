@@ -172,8 +172,8 @@ class RephraseOverlay(QtWidgets.QWidget):
         layout = QtWidgets.QVBoxLayout()
         # Add close button (X) at the top right
         close_btn = QtWidgets.QPushButton('✕')
-        close_btn.setFixedSize(24, 24)
-        close_btn.setStyleSheet('border: none; background: transparent; font-size: 16px; color: #888;')
+        close_btn.setFixedSize(40, 40)  # Larger clickable area
+        close_btn.setStyleSheet('border: none; background: transparent; font-size: 22px; color: #888; padding: 8px;')
         close_btn.clicked.connect(self.close)
         close_layout = QtWidgets.QHBoxLayout()
         close_layout.addStretch()
@@ -262,7 +262,9 @@ class SelectionListener(QtCore.QObject):
         mouse_up_pos = mouse.get_position()
         # Only trigger if mouse was dragged (distance > threshold)
         if self.mouse_down_pos and (abs(mouse_up_pos[0] - self.mouse_down_pos[0]) > 3 or abs(mouse_up_pos[1] - self.mouse_down_pos[1]) > 3):
-            self.try_show_button()
+            # Add a longer delay to let the OS register the selection
+            time.sleep(0.25)
+            self.try_show_button_with_retry(retries=5, delay=0.25)
         self.mouse_down_pos = None
 
     def on_key_release(self, event):
@@ -289,6 +291,27 @@ class SelectionListener(QtCore.QObject):
             self.request_show_button.emit(text)
         else:
             debug_print('[DEBUG] Selection too short, not showing button.')
+
+    def try_show_button_with_retry(self, retries=5, delay=0.25):
+        if not is_supported_app_focused():
+            debug_print('[DEBUG] Not a supported app, not showing button.')
+            return
+        old_clip = pyperclip.paste()
+        keyboard.press_and_release('ctrl+c')
+        text = old_clip
+        for attempt in range(retries):
+            time.sleep(delay)
+            text = pyperclip.paste()
+            debug_print(f'[DEBUG] Clipboard content (attempt {attempt+1}, len={len(text)}):', repr(text))
+            # If clipboard contains valid text, break early
+            if text.strip() and len(text.strip()) >= 100:
+                break
+        # Show button if clipboard contains valid text, regardless of change
+        if text.strip() and len(text.strip()) >= 100:
+            debug_print('[DEBUG] Scheduling floating button for:', text[:50])
+            self.request_show_button.emit(text)
+        else:
+            debug_print(f'[DEBUG] Selection too short (len={len(text.strip())}), not showing button.')
 
     def show_button(self, text):
         debug_print('[DEBUG] show_button called with:', repr(text))
