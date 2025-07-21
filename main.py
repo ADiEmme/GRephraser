@@ -207,6 +207,11 @@ class RephraseOverlay(QtWidgets.QWidget):
         self.text_label.setSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Minimum)
         self.text_label.installEventFilter(self)
         frame_layout.addWidget(self.text_label, alignment=QtCore.Qt.AlignTop)
+        # Add subtle instruction label at the bottom
+        self.instruction_label = QtWidgets.QLabel('(Click on the green area to copy the text in your clipboard and paste it later).')
+        self.instruction_label.setAlignment(QtCore.Qt.AlignCenter)
+        self.instruction_label.setStyleSheet('color: #666; font-size: 11px; padding-top: 8px; background: transparent;')
+        frame_layout.addWidget(self.instruction_label, alignment=QtCore.Qt.AlignBottom)
         layout.addWidget(self.frame)
         self.setLayout(layout)
         self.setMinimumSize(200, 60)
@@ -307,8 +312,6 @@ class SelectionListener(QtCore.QObject):
         time.sleep(0.1)
         text = pyperclip.paste()
         debug_print('[DEBUG] Clipboard content:', repr(text))
-        if text != old_clip:
-            pyperclip.copy(old_clip)
         # Only show button for long enough text
         if text.strip() and len(text.strip()) >= 100:
             debug_print('[DEBUG] Scheduling floating button for:', text[:50])

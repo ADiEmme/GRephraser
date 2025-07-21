@@ -5,11 +5,15 @@ A Windows-only Python application that provides a Grammarly-like overlay for rep
 ## Features
 - System tray icon for easy access
 - Settings window (with API Key, API URL, and Prompt fields)
+- **General tab in Settings includes a checkbox to start the app automatically at Windows startup.**
 - Global hotkey to trigger overlay (default: Ctrl+Shift+G)
 - Detects selected text in any application
 - Overlay UI near cursor with rephrase button
 - Uses OpenAI's ChatGPT to rephrase text
 - Copy rephrased text to clipboard
+- **Floating button appears for any selection of 100+ characters, even if the clipboard content is unchanged.**
+- **Suggestion window includes a subtle instruction at the bottom:**
+  `(Click on the green area to copy the text in your clipboard and paste it later).`
 
 ## Setup
 1. Install Python 3.8+
@@ -28,16 +32,19 @@ In alternative, you can execute the dist/grephraser.exe
 - The app runs in the system tray (bottom right of your Windows taskbar).
 - Right-click the tray icon to access the menu:
   - **Settings**: Opens a window with two tabs:
-    - **General**: (currently empty)
+    - **General**: Contains a checkbox labeled 'Start this application automatically at Windows startup'.
     - **Parameters**: Set your OpenAI API Key, API URL, and the prompt used for rephrasing. These are saved to `settings.json` and used for all requests.
   - **Exit**: Closes the app.
 - Select text anywhere in Windows (minimum 100 characters).
 - Click the floating button or use the hotkey to rephrase.
-- The overlay appears with the rephrased text, which you can click to copy.
+- The overlay appears with the rephrased text, which you can click anywhere in the green area to copy.
+- **Instruction:** At the bottom of the green window, you'll see:
+  `(Click on the green area to copy the text in your clipboard and paste it later).`
 
 ## Settings
 - Settings are stored in `settings.json` in the app directory.
 - You can change the API key, API URL, and prompt at any time via the Settings window.
+- The General tab includes a checkbox to enable or disable starting the app at Windows startup.
 - Changes take effect immediately after saving.
 
 ## HTTP Debugging
