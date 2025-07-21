@@ -51,5 +51,10 @@ If you want to see the full URL and details of API requests (for troubleshooting
 - If you get a 404 or authentication error, double-check your API URL and API key in the settings window.
 - If you change settings and they do not take effect, restart the app.
 
+## Binary file creation:
+```bash
+python -m PyInstaller --onefile --noconsole --name grephraser --icon=icon.ico main.py
+```
+
 ## License
 MIT 

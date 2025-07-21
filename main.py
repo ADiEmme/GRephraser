@@ -23,6 +23,8 @@ requests_log = logging.getLogger("urllib3")
 requests_log.setLevel(logging.DEBUG)
 requests_log.propagate = True
 
+import shutil
+
 
 APP_PID = os.getpid()
 
@@ -92,6 +94,14 @@ def save_settings():
 # Initial load
 load_settings()
 
+def get_icon_path():
+    base_dir = os.path.dirname(sys.executable if getattr(sys, 'frozen', False) else os.path.abspath(sys.argv[0]))
+    ico_path = os.path.join(base_dir, 'icon.ico')
+    png_path = os.path.join(base_dir, 'icon.png')
+    if os.path.exists(ico_path):
+        return ico_path
+    return png_path
+
 class FloatingButton(QtWidgets.QWidget):
     def __init__(self, selected_text, parent=None):
         super().__init__(parent)
@@ -109,7 +119,7 @@ class FloatingButton(QtWidgets.QWidget):
     def init_ui(self):
         layout = QtWidgets.QVBoxLayout()
         self.button = QtWidgets.QPushButton()
-        self.button.setIcon(QtGui.QIcon('icon.png'))
+        self.button.setIcon(QtGui.QIcon(get_icon_path()))
         self.button.setIconSize(QtCore.QSize(40, 40))  # <-- Make icon bigger
         self.button.setFixedSize(65, 65)               # <-- Make button bigger
         self.button.setStyleSheet('border: none; background: transparent;')
@@ -170,23 +180,37 @@ class RephraseOverlay(QtWidgets.QWidget):
 
     def init_ui(self):
         layout = QtWidgets.QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        # Main frame for rounded corners
+        self.frame = QtWidgets.QFrame()
+        self.frame.setStyleSheet('background: #e0ffe0; border-radius: 16px;')
+        frame_layout = QtWidgets.QVBoxLayout(self.frame)
+        frame_layout.setContentsMargins(10, 10, 10, 10)
+        frame_layout.setSpacing(0)
         # Add close button (X) at the top right
-        close_btn = QtWidgets.QPushButton('✕')
-        close_btn.setFixedSize(40, 40)  # Larger clickable area
-        close_btn.setStyleSheet('border: none; background: transparent; font-size: 22px; color: #888; padding: 8px;')
-        close_btn.clicked.connect(self.close)
         close_layout = QtWidgets.QHBoxLayout()
+        close_layout.setContentsMargins(0, 0, 0, 0)
+        close_layout.setSpacing(0)
         close_layout.addStretch()
+        close_btn = QtWidgets.QPushButton('✕')
+        close_btn.setFixedSize(32, 32)
+        close_btn.setCursor(QtGui.QCursor(QtCore.Qt.PointingHandCursor))
+        close_btn.setStyleSheet('border: none; background: rgba(255,255,255,0.01); font-size: 18px; color: #888; padding: 2px; margin: 0px;')
+        close_btn.clicked.connect(self.close)
         close_layout.addWidget(close_btn)
-        layout.addLayout(close_layout)
+        frame_layout.addLayout(close_layout)
         self.text_label = QtWidgets.QLabel()
         self.text_label.setWordWrap(True)
-        self.text_label.setStyleSheet("background: #e0ffe0; padding: 8px; border-radius: 6px; font-size: 14px;")
-        layout.addWidget(self.text_label)
+        self.text_label.setAlignment(QtCore.Qt.AlignTop | QtCore.Qt.AlignLeft)
+        self.text_label.setStyleSheet("background: transparent; font-size: 14px; padding: 0px;")
+        self.text_label.setSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Minimum)
+        self.text_label.installEventFilter(self)
+        frame_layout.addWidget(self.text_label, alignment=QtCore.Qt.AlignTop)
+        layout.addWidget(self.frame)
         self.setLayout(layout)
         self.setMinimumSize(200, 60)
         self.setMaximumSize(1200, 800)
-        self.text_label.installEventFilter(self)
 
     def get_rephrased_text(self):
         self.worker = RephraseWorker(self.selected_text)
@@ -194,12 +218,14 @@ class RephraseOverlay(QtWidgets.QWidget):
         self.worker.start()
 
     def on_result_ready(self, result, is_error):
+        # Strip leading newlines before displaying
+        result = result.lstrip('\n') if isinstance(result, str) else result
         if is_error:
             self.text_label.setText(result)
-            self.text_label.setStyleSheet("background: #ffe0e0; padding: 8px; border-radius: 6px; font-size: 14px;")
+            self.text_label.setStyleSheet("background: #ffe0e0; padding: 8px; border-radius: 16px; font-size: 14px;")
         else:
             self.text_label.setText(result)
-            self.text_label.setStyleSheet("background: #e0ffe0; padding: 8px; border-radius: 6px; font-size: 14px;")
+            self.text_label.setStyleSheet("background: transparent; font-size: 14px;")
         self.adjust_size_to_text()
         self.show()
         self.raise_()
@@ -210,9 +236,9 @@ class RephraseOverlay(QtWidgets.QWidget):
         metrics = QtGui.QFontMetrics(font)
         lines = self.text_label.text().splitlines() or ['']
         max_line_width = max((metrics.width(line) for line in lines), default=200)
-        width = min(max(max_line_width + 40, 200), 1200)
-        height = min(max(metrics.height() * len(lines) + 40, 60), 800)
-        self.resize(width, height)
+        width = max(max_line_width + 40, 200)
+        content_height = max(metrics.height() * len(lines) + 40, 60)
+        self.resize(width, content_height)
 
     def eventFilter(self, obj, event):
         if obj == self.text_label and event.type() == QtCore.QEvent.MouseButtonPress:
@@ -229,10 +255,8 @@ class RephraseOverlay(QtWidgets.QWidget):
         return super().eventFilter(obj, event)
 
     def show_near_cursor(self):
-        # Show click catcher first
-        # if not self.click_catcher:
-        #     self.click_catcher = ClickCatcher(self)
         pos = QtGui.QCursor.pos()
+        self.adjust_size_to_text()
         self.move(pos.x() + 10, pos.y() + 10)
         self.show()
         self.raise_()
@@ -322,12 +346,51 @@ class SelectionListener(QtCore.QObject):
         # Reset last_text so repeated selections work
         self.last_text = ''
 
+# --- Startup logic for SettingsWindow ---
+def get_startup_shortcut_path():
+    startup_dir = os.path.join(os.environ['APPDATA'], r'Microsoft\Windows\Start Menu\Programs\Startup')
+    if getattr(sys, 'frozen', False):
+        exe_path = sys.executable
+        base_dir = os.path.dirname(exe_path)
+    else:
+        exe_path = os.path.abspath(sys.argv[0])
+        base_dir = os.path.dirname(exe_path)
+    ico_path = os.path.join(base_dir, 'icon.ico')
+    png_path = os.path.join(base_dir, 'icon.png')
+    shortcut_name = 'GRephraser.lnk'
+    return os.path.join(startup_dir, shortcut_name), exe_path, ico_path, png_path
+
+def enable_startup():
+    shortcut_path, exe_path, ico_path, png_path = get_startup_shortcut_path()
+    import pythoncom
+    from win32com.shell import shell, shellcon
+    shell_link = pythoncom.CoCreateInstance(shell.CLSID_ShellLink, None, pythoncom.CLSCTX_INPROC_SERVER, shell.IID_IShellLink)
+    shell_link.SetPath(exe_path)
+    shell_link.SetDescription('GRephraser')
+    if os.path.exists(ico_path):
+        shell_link.SetIconLocation(ico_path, 0)
+    elif os.path.exists(png_path):
+        shell_link.SetIconLocation(png_path, 0)
+    else:
+        shell_link.SetIconLocation(exe_path, 0)
+    persist_file = shell_link.QueryInterface(pythoncom.IID_IPersistFile)
+    persist_file.Save(shortcut_path, 0)
+
+def disable_startup():
+    shortcut_path, _, _, _ = get_startup_shortcut_path()
+    if os.path.exists(shortcut_path):
+        os.remove(shortcut_path)
+
+def is_startup_enabled():
+    shortcut_path, _, _, _ = get_startup_shortcut_path()
+    return os.path.exists(shortcut_path)
+
 class SettingsWindow(QtWidgets.QMainWindow):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle('Settings')
         self.setMinimumSize(400, 300)
-        self.setWindowIcon(QtGui.QIcon('icon.png'))  # Set custom icon
+        self.setWindowIcon(QtGui.QIcon(get_icon_path()))  # Set custom icon
         self.tabs = QtWidgets.QTabWidget()
         self.general_tab = QtWidgets.QWidget()
         self.parameters_tab = QtWidgets.QWidget()
@@ -348,7 +411,9 @@ class SettingsWindow(QtWidgets.QMainWindow):
 
     def init_general_tab(self):
         layout = QtWidgets.QVBoxLayout()
-        # Placeholder for future general settings
+        self.startup_checkbox = QtWidgets.QCheckBox('Start this application automatically at Windows startup')
+        self.startup_checkbox.setChecked(is_startup_enabled())
+        layout.addWidget(self.startup_checkbox)
         layout.addStretch()
         self.general_tab.setLayout(layout)
 
@@ -372,11 +437,22 @@ class SettingsWindow(QtWidgets.QMainWindow):
         settings['api_url'] = self.api_url_edit.text().strip()
         settings['prompt'] = self.prompt_edit.toPlainText().strip()
         save_settings()
+        # Handle startup checkbox
+        if self.startup_checkbox.isChecked():
+            try:
+                enable_startup()
+            except Exception as e:
+                debug_print('[DEBUG] Failed to enable startup:', e)
+        else:
+            try:
+                disable_startup()
+            except Exception as e:
+                debug_print('[DEBUG] Failed to disable startup:', e)
         self.close()
 
 class SystemTrayIcon(QtWidgets.QSystemTrayIcon):
     def __init__(self, app, parent=None):
-        icon = QtGui.QIcon('icon.png')
+        icon = QtGui.QIcon(get_icon_path())
         super().__init__(icon, parent)
         self.app = app
         self.setToolTip('ChatGPT Rephraser')
@@ -435,13 +511,19 @@ class GlobalPasteHotkey(QtCore.QObject):
         debug_print('[DEBUG] Global hotkey Ctrl+Shift+V pressed, sending Ctrl+V')
         keyboard.press_and_release('ctrl+v')
 
+# --- Prompt injection mitigation ---
+# In RephraseWorker, ensure prompt is only set by settings, and user text is always a separate user message.
+# This is already the case in your code:
+# messages=[{"role": "system", "content": settings['prompt']}, {"role": "user", "content": f"Rephrase the following text: {self.selected_text}"}]
+# Do not allow user input to modify settings['prompt'] from the UI except in the Parameters tab.
+
 def main():
     global hidden_main
     app = QtWidgets.QApplication(sys.argv)
-    app.setWindowIcon(QtGui.QIcon('icon.png'))  # Set global app icon for taskbar
+    app.setWindowIcon(QtGui.QIcon(get_icon_path()))  # Set global app icon for taskbar
     app.setQuitOnLastWindowClosed(False)  # Prevent app from quitting when dialogs close
     hidden_main = QtWidgets.QMainWindow()
-    hidden_main.setWindowIcon(QtGui.QIcon('icon.png'))
+    hidden_main.setWindowIcon(QtGui.QIcon(get_icon_path()))
     hidden_main.setWindowTitle('GRephraser')
     hidden_main.setGeometry(-10000, -10000, 100, 100)  # Move off-screen
     hidden_main.show()
