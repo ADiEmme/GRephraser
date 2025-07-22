@@ -216,6 +216,57 @@ class RephraseOverlay(QtWidgets.QWidget):
         self.prev_hwnd = win32gui.GetForegroundWindow()
         self.init_ui()
         self.get_rephrased_text()
+        # Fade effect
+        self.opacity_effect = QtWidgets.QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self.opacity_effect)
+        self.fade_anim = QtCore.QPropertyAnimation(self.opacity_effect, b"opacity")
+        self.fade_anim.setDuration(300)
+        self.fade_anim.setStartValue(0)
+        self.fade_anim.setEndValue(1)
+        self.fade_anim.start()
+        # Auto-close timer (10 seconds, always starts on show)
+        self.auto_close_timer = QtCore.QTimer(self)
+        self.auto_close_timer.setSingleShot(True)
+        self.auto_close_timer.timeout.connect(self.on_auto_close_timeout)
+        self.setMouseTracking(True)
+        self.timer_expired = False
+        self.auto_close_timer.start(10000)
+
+    def on_auto_close_timeout(self):
+        self.timer_expired = True
+        if not self.underMouse():
+            self.fade_and_close()
+        # else: wait for leaveEvent to close
+
+    def enterEvent(self, event):
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        if self.timer_expired:
+            self.fade_and_close()
+        super().leaveEvent(event)
+
+    def fade_and_close(self):
+        self.fade_anim = QtCore.QPropertyAnimation(self.opacity_effect, b"opacity")
+        self.fade_anim.setDuration(400)
+        self.fade_anim.setStartValue(1)
+        self.fade_anim.setEndValue(0)
+        self.fade_anim.finished.connect(self.close)
+        self.fade_anim.start()
+
+    def showEvent(self, event):
+        # Fade in when shown
+        self.opacity_effect.setOpacity(0)
+        self.fade_anim = QtCore.QPropertyAnimation(self.opacity_effect, b"opacity")
+        self.fade_anim.setDuration(300)
+        self.fade_anim.setStartValue(0)
+        self.fade_anim.setEndValue(1)
+        self.fade_anim.start()
+        super().showEvent(event)
+
+    def closeEvent(self, event):
+        self.auto_close_timer.stop()
+        super().closeEvent(event)
 
     def init_ui(self):
         layout = QtWidgets.QVBoxLayout()
@@ -296,6 +347,8 @@ class RephraseOverlay(QtWidgets.QWidget):
 
     def eventFilter(self, obj, event):
         if obj == self.text_label and event.type() == QtCore.QEvent.MouseButtonPress:
+            if hasattr(self, 'auto_close_timer'):
+                self.auto_close_timer.stop()
             rephrased = self.text_label.text()
             pyperclip.copy('')
             time.sleep(0.05)
@@ -325,6 +378,7 @@ class SelectionListener(QtCore.QObject):
         self.app = app
         self.last_text = ''
         self.button = None
+        self.overlay = None  # Track the current overlay
         self.mouse_down_pos = None
         self.request_show_button.connect(self.show_button)
         mouse.on_button(self.on_mouse_down, buttons=mouse.LEFT, types=mouse.DOWN)
@@ -353,6 +407,9 @@ class SelectionListener(QtCore.QObject):
         if not is_supported_app_focused():
             debug_print('[DEBUG] Not a supported app, not showing button.')
             return
+        if keyboard.is_pressed('ctrl'):
+            debug_print('[DEBUG] Ctrl is currently pressed, skipping simulated copy to avoid key state issues.')
+            return
         old_clip = pyperclip.paste()
         keyboard.press_and_release('ctrl+c')
         time.sleep(0.1)
@@ -362,11 +419,15 @@ class SelectionListener(QtCore.QObject):
             debug_print('[DEBUG] Scheduling floating button for:', text[:50])
             self.request_show_button.emit(text)
         else:
-            debug_print('[DEBUG] Selection too short, not showing button.')
+            pyperclip.copy(old_clip)
+            debug_print('[DEBUG] Selection too short, not showing button. Clipboard restored.')
 
     def try_show_button_with_retry(self, retries=5, delay=0.25):
         if not is_supported_app_focused():
             debug_print('[DEBUG] Not a supported app, not showing button.')
+            return
+        if keyboard.is_pressed('ctrl'):
+            debug_print('[DEBUG] Ctrl is currently pressed, skipping simulated copy to avoid key state issues.')
             return
         old_clip = pyperclip.paste()
         keyboard.press_and_release('ctrl+c')
@@ -381,13 +442,27 @@ class SelectionListener(QtCore.QObject):
             debug_print('[DEBUG] Scheduling floating button for:', text[:50])
             self.request_show_button.emit(text)
         else:
-            debug_print(f'[DEBUG] Selection too short (len={len(text.strip())}), not showing button.')
+            pyperclip.copy(old_clip)
+            debug_print(f'[DEBUG] Selection too short (len={len(text.strip())}), not showing button. Clipboard restored.')
 
     def show_button(self, text):
         debug_print('[DEBUG] show_button called with:', repr(text))
+        # Close any existing overlay (if any)
+        if self.overlay is not None:
+            try:
+                self.overlay.close()
+            except Exception as e:
+                debug_print('[DEBUG] Error closing previous overlay:', e)
+            self.overlay = None
         if self.button is not None:
             self.button.close()
         self.button = FloatingButton(text)
+        # Patch: track overlay from FloatingButton
+        orig_rephrase_text = self.button.rephrase_text
+        def rephrase_text_and_track():
+            orig_rephrase_text()
+            self.overlay = self.button.overlay
+        self.button.rephrase_text = rephrase_text_and_track
         self.button.show_near_cursor()
         self.last_text = ''
 
@@ -398,7 +473,7 @@ def get_startup_shortcut_path():
         base_dir = os.path.dirname(exe_path)
     else:
         exe_path = os.path.abspath(sys.argv[0])
-        base_dir = os.path.dirname(exe_path)
+        base_dir = os.path.dirname(exe_path) 
     ico_path = os.path.join(base_dir, 'icon.ico')
     png_path = os.path.join(base_dir, 'icon.png')
     shortcut_name = 'GRephraser.lnk'
