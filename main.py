@@ -190,12 +190,15 @@ class RephraseWorker(QtCore.QThread):
             )
             reply = response.choices[0].message.content.strip()
             debug_print('[DEBUG] Raw OpenAI response:\n', reply)
-            # Remove all [[REPHRASE:idx]] tags from the reply
-            cleaned_reply = re.sub(r"\\[\\[REPHRASE:\\d+\\]\\]\\s*", "", reply)
+            # Remove all [[REPHRASE:idx]] tags from the reply (robust)
+            cleaned_reply = re.sub(r"\[\[REPHRASE:\s*\d+\]\]\s*", "", reply, flags=re.IGNORECASE | re.MULTILINE)
             self.result_ready.emit(cleaned_reply, False)
         except Exception as e:
             debug_print('[DEBUG] error', e)
-            self.result_ready.emit(f"Error: {str(e)}", True)
+            # Clean any tags from the error string if present
+            error_str = str(e)
+            cleaned_error = re.sub(r"\[\[REPHRASE:\s*\d+\]\]\s*", "", error_str, flags=re.IGNORECASE | re.MULTILINE)
+            self.result_ready.emit(f"Error: {cleaned_error}", True)
 
     def is_code_like(self, line):
         stripped = line.strip()
@@ -320,7 +323,9 @@ class RephraseOverlay(QtWidgets.QWidget):
 
     def on_result_ready(self, result, is_error):
         debug_print('[DEBUG] on_result_ready called with:', repr(result), 'is_error:', is_error)
-        result = result.lstrip('\n') if isinstance(result, str) else result
+        # Always clean tags before display
+        if isinstance(result, str):
+            result = re.sub(r"\[\[REPHRASE:\s*\d+\]\]\s*", "", result, flags=re.IGNORECASE | re.MULTILINE).lstrip('\n')
         self.loading_label.hide()
         if is_error:
             debug_print('[DEBUG] Setting error text in label:', repr(result))
