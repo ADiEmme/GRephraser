@@ -61,6 +61,7 @@ SETTINGS_FILE = './assets/settings.json'
 DEFAULT_SETTINGS = {
     'api_key': '',
     'api_url': 'https://api.openai.com/v1',
+    'model': 'gpt-3.5-turbo',
     'prompt': 'You are a helpful assistant that rephrases text in a clear and concise way.'
 }
 settings = {}
@@ -182,7 +183,7 @@ class RephraseWorker(QtCore.QThread):
                 {"role": "user", "content": f"Rephrase the following text as per instructions:\n\n{text_for_rephrase}"}
             ]
             response = openai.chat.completions.create(
-                model="gpt-3.5-turbo",
+                model=settings.get('model', 'gpt-3.5-turbo'),
                 messages=messages,
                 max_tokens=500,
                 temperature=0.7
@@ -190,7 +191,7 @@ class RephraseWorker(QtCore.QThread):
             reply = response.choices[0].message.content.strip()
             debug_print('[DEBUG] Raw OpenAI response:\n', reply)
             # Remove all [[REPHRASE:idx]] tags from the reply
-            cleaned_reply = re.sub(r"\[\[REPHRASE:\d+\]\]\s*", "", reply)
+            cleaned_reply = re.sub(r"\\[\\[REPHRASE:\\d+\\]\\]\\s*", "", reply)
             self.result_ready.emit(cleaned_reply, False)
         except Exception as e:
             debug_print('[DEBUG] error', e)
@@ -540,20 +541,24 @@ class SettingsWindow(QtWidgets.QMainWindow):
         layout = QtWidgets.QFormLayout()
         self.api_key_edit = QtWidgets.QLineEdit()
         self.api_url_edit = QtWidgets.QLineEdit()
+        self.model_edit = QtWidgets.QLineEdit()
         self.prompt_edit = QtWidgets.QPlainTextEdit()
         layout.addRow('API Key:', self.api_key_edit)
         layout.addRow('API URL:', self.api_url_edit)
+        layout.addRow('Model:', self.model_edit)
         layout.addRow('Prompt:', self.prompt_edit)
         self.parameters_tab.setLayout(layout)
 
     def load_current_settings(self):
         self.api_key_edit.setText(settings.get('api_key', ''))
         self.api_url_edit.setText(settings.get('api_url', ''))
+        self.model_edit.setText(settings.get('model', 'gpt-3.5-turbo'))
         self.prompt_edit.setPlainText(settings.get('prompt', ''))
 
     def save_and_close(self):
         settings['api_key'] = self.api_key_edit.text().strip()
         settings['api_url'] = self.api_url_edit.text().strip()
+        settings['model'] = self.model_edit.text().strip() or 'gpt-3.5-turbo'
         settings['prompt'] = self.prompt_edit.toPlainText().strip()
         save_settings()
         if self.startup_checkbox.isChecked():
