@@ -109,9 +109,12 @@ def get_icon_path():
     return png_path_base
 
 class FloatingButton(QtWidgets.QWidget):
-    def __init__(self, selected_text, parent=None):
+    overlay_created = QtCore.pyqtSignal(object)
+
+    def __init__(self, selected_text, source_hwnd, parent=None):
         super().__init__(parent)
         self.selected_text = selected_text
+        self.source_hwnd = source_hwnd
         self.setWindowFlags(
             QtCore.Qt.FramelessWindowHint |
             QtCore.Qt.WindowStaysOnTopHint |
@@ -134,8 +137,9 @@ class FloatingButton(QtWidgets.QWidget):
         self.setFixedSize(65, 65)
     def rephrase_text(self):
         self.button.setEnabled(False)
-        self.overlay = RephraseOverlay(self.selected_text)
-        self.overlay.show_near_cursor()
+        overlay = RephraseOverlay(self.selected_text, self.source_hwnd)
+        overlay.show_near_cursor()
+        self.overlay_created.emit(overlay)
         self.close()
 
     def show_near_cursor(self):
@@ -186,7 +190,8 @@ class RephraseWorker(QtCore.QThread):
                 model=settings.get('model', 'gpt-3.5-turbo'),
                 messages=messages,
                 max_tokens=500,
-                temperature=0.7
+                temperature=0.7,
+                timeout=15.0
             )
             reply = response.choices[0].message.content.strip()
             debug_print('[DEBUG] Raw OpenAI response:\n', reply)
@@ -212,12 +217,12 @@ class RephraseWorker(QtCore.QThread):
         )
 
 class RephraseOverlay(QtWidgets.QWidget):
-    def __init__(self, selected_text, parent=None):
+    def __init__(self, selected_text, source_hwnd, parent=None):
         super().__init__(parent)
         self.selected_text = selected_text
         self.setWindowFlags(QtCore.Qt.FramelessWindowHint | QtCore.Qt.WindowStaysOnTopHint | QtCore.Qt.Tool)
         self.setAttribute(QtCore.Qt.WA_TranslucentBackground)
-        self.prev_hwnd = win32gui.GetForegroundWindow()
+        self.prev_hwnd = source_hwnd
         self.init_ui()
         self.get_rephrased_text()
         # Fade effect
@@ -299,7 +304,7 @@ class RephraseOverlay(QtWidgets.QWidget):
         self.text_label.setSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Minimum)
         self.text_label.installEventFilter(self)
         frame_layout.addWidget(self.text_label, alignment=QtCore.Qt.AlignTop)
-        self.instruction_label = QtWidgets.QLabel('(Click on the green area to copy the text in your clipboard and paste it later).')
+        self.instruction_label = QtWidgets.QLabel('(Click on the green area to replace the selected text).')
         self.instruction_label.setAlignment(QtCore.Qt.AlignCenter)
         self.instruction_label.setStyleSheet('color: #666; font-size: 11px; padding-top: 8px; background: transparent;')
         frame_layout.addWidget(self.instruction_label, alignment=QtCore.Qt.AlignBottom)
@@ -362,8 +367,19 @@ class RephraseOverlay(QtWidgets.QWidget):
             debug_print('[DEBUG] Copied rephrased text to clipboard')
             self.hide()
             self.close()
-            notif = NotificationWindow('Rephrased text copied!<br>Click back into your app and press Ctrl+V to paste.')
-            notif.show()
+            try:
+                if self.prev_hwnd:
+                    win32gui.ShowWindow(self.prev_hwnd, win32con.SW_RESTORE)
+                    win32gui.SetForegroundWindow(self.prev_hwnd)
+                    time.sleep(0.1)
+                keyboard.press_and_release('ctrl+v')
+                debug_print('[DEBUG] Pasted rephrased text.')
+                notif = NotificationWindow('Rephrased text has been pasted.')
+                notif.show()
+            except Exception as e:
+                debug_print(f'[DEBUG] Failed to paste: {e}')
+                notif = NotificationWindow('Rephrased text copied!<br>Could not paste automatically.')
+                notif.show()
             return True
         return super().eventFilter(obj, event)
 
@@ -377,7 +393,7 @@ class RephraseOverlay(QtWidgets.QWidget):
         debug_print('[DEBUG] RephraseOverlay shown at', pos.x() + 10, pos.y() + 10)
 
 class SelectionListener(QtCore.QObject):
-    request_show_button = QtCore.pyqtSignal(str)
+    request_show_button = QtCore.pyqtSignal(str, int)
 
     def __init__(self, app):
         super().__init__()
@@ -421,6 +437,7 @@ class SelectionListener(QtCore.QObject):
             debug_print('[DEBUG] Ctrl is currently pressed, skipping simulated copy to avoid key state issues.')
             return
         
+        source_hwnd = win32gui.GetForegroundWindow()
         old_clip = ''
         try:
             old_clip = pyperclip.paste()
@@ -451,7 +468,7 @@ class SelectionListener(QtCore.QObject):
         
         if text.strip() and len(text.strip()) >= 100:
             debug_print('[DEBUG] Scheduling floating button for:', text[:50])
-            self.request_show_button.emit(text)
+            self.request_show_button.emit(text, source_hwnd)
         else:
             try:
                 pyperclip.copy(old_clip)
@@ -463,7 +480,7 @@ class SelectionListener(QtCore.QObject):
             else:
                 debug_print(f'[DEBUG] Selection too short (len={len(text.strip())}), not showing button. Clipboard restored.')
 
-    def show_button(self, text):
+    def show_button(self, text, source_hwnd):
         debug_print('[DEBUG] show_button called with:', repr(text))
         # Close any existing overlay (if any)
         if self.overlay is not None:
@@ -474,15 +491,13 @@ class SelectionListener(QtCore.QObject):
             self.overlay = None
         if self.button is not None:
             self.button.close()
-        self.button = FloatingButton(text)
-        # Patch: track overlay from FloatingButton
-        orig_rephrase_text = self.button.rephrase_text
-        def rephrase_text_and_track():
-            orig_rephrase_text()
-            self.overlay = self.button.overlay
-        self.button.rephrase_text = rephrase_text_and_track
+        self.button = FloatingButton(text, source_hwnd)
+        self.button.overlay_created.connect(self.track_overlay)
         self.button.show_near_cursor()
         self.last_text = ''
+
+    def track_overlay(self, overlay):
+        self.overlay = overlay
 
 def get_startup_shortcut_path():
     startup_dir = os.path.join(os.environ['APPDATA'], r'Microsoft\Windows\Start Menu\Programs\Startup')
