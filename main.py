@@ -410,46 +410,58 @@ class SelectionListener(QtCore.QObject):
             self.try_show_button()
 
     def try_show_button(self):
-        if not is_supported_app_focused():
-            debug_print('[DEBUG] Not a supported app, not showing button.')
-            return
-        if keyboard.is_pressed('ctrl'):
-            debug_print('[DEBUG] Ctrl is currently pressed, skipping simulated copy to avoid key state issues.')
-            return
-        old_clip = pyperclip.paste()
-        keyboard.press_and_release('ctrl+c')
-        time.sleep(0.1)
-        text = pyperclip.paste()
-        debug_print('[DEBUG] Clipboard content:', repr(text))
-        if text.strip() and len(text.strip()) >= 100:
-            debug_print('[DEBUG] Scheduling floating button for:', text[:50])
-            self.request_show_button.emit(text)
-        else:
-            pyperclip.copy(old_clip)
-            debug_print('[DEBUG] Selection too short, not showing button. Clipboard restored.')
+        # Use the more reliable retry mechanism
+        self.try_show_button_with_retry()
 
-    def try_show_button_with_retry(self, retries=5, delay=0.25):
+    def try_show_button_with_retry(self, retries=10, delay=0.05):
         if not is_supported_app_focused():
             debug_print('[DEBUG] Not a supported app, not showing button.')
             return
         if keyboard.is_pressed('ctrl'):
             debug_print('[DEBUG] Ctrl is currently pressed, skipping simulated copy to avoid key state issues.')
             return
-        old_clip = pyperclip.paste()
+        
+        old_clip = ''
+        try:
+            old_clip = pyperclip.paste()
+        except Exception as e:
+            debug_print(f"[DEBUG] Could not get clipboard content: {e}")
+
+        try:
+            pyperclip.copy('')
+        except Exception as e:
+            debug_print(f"[DEBUG] Could not clear clipboard: {e}")
+            return # Cannot proceed if we can't clear the clipboard
+
+        time.sleep(0.05) # Small delay before sending keys
         keyboard.press_and_release('ctrl+c')
-        text = old_clip
+        
+        text = ''
         for attempt in range(retries):
             time.sleep(delay)
-            text = pyperclip.paste()
+            try:
+                text = pyperclip.paste()
+            except Exception as e:
+                debug_print(f"[DEBUG] Could not paste on attempt {attempt+1}: {e}")
+                continue # Try again
+
             debug_print(f'[DEBUG] Clipboard content (attempt {attempt+1}, len={len(text)}):', repr(text))
-            if text.strip() and len(text.strip()) >= 100:
+            if text:
                 break
+        
         if text.strip() and len(text.strip()) >= 100:
             debug_print('[DEBUG] Scheduling floating button for:', text[:50])
             self.request_show_button.emit(text)
         else:
-            pyperclip.copy(old_clip)
-            debug_print(f'[DEBUG] Selection too short (len={len(text.strip())}), not showing button. Clipboard restored.')
+            try:
+                pyperclip.copy(old_clip)
+            except Exception as e:
+                debug_print(f"[DEBUG] Could not restore clipboard: {e}")
+
+            if not text.strip():
+                debug_print(f'[DEBUG] Failed to get selection from clipboard. Clipboard restored.')
+            else:
+                debug_print(f'[DEBUG] Selection too short (len={len(text.strip())}), not showing button. Clipboard restored.')
 
     def show_button(self, text):
         debug_print('[DEBUG] show_button called with:', repr(text))
@@ -655,4 +667,4 @@ def main():
         debug_print('[DEBUG] KeyboardInterrupt caught, exiting gracefully.')
 
 if __name__ == '__main__':
-    main() 
+    main()
