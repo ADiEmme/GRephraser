@@ -369,7 +369,7 @@ class RephraseOverlay(QtWidgets.QWidget):
             self.close()
             try:
                 if self.prev_hwnd:
-                    win32gui.ShowWindow(self.prev_hwnd, win32con.SW_RESTORE)
+                    win32gui.ShowWindow(self.prev_hwnd, win32con.SW_SHOW)
                     win32gui.SetForegroundWindow(self.prev_hwnd)
                     time.sleep(0.1)
                 keyboard.press_and_release('ctrl+v')
