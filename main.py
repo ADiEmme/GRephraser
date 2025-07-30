@@ -275,7 +275,15 @@ class RephraseOverlay(QtWidgets.QWidget):
 
     def closeEvent(self, event):
         self.auto_close_timer.stop()
+        QtCore.QTimer.singleShot(100, self.clear_clipboard)
         super().closeEvent(event)
+
+    def clear_clipboard(self):
+        try:
+            pyperclip.copy('')
+            debug_print('[DEBUG] Clipboard cleared on overlay close.')
+        except Exception as e:
+            debug_print(f'[DEBUG] Failed to clear clipboard on overlay close: {e}')
 
     def init_ui(self):
         layout = QtWidgets.QVBoxLayout()
@@ -398,7 +406,6 @@ class SelectionListener(QtCore.QObject):
     def __init__(self, app):
         super().__init__()
         self.app = app
-        self.last_text = ''
         self.button = None
         self.overlay = None  # Track the current overlay
         self.mouse_down_pos = None
@@ -444,15 +451,16 @@ class SelectionListener(QtCore.QObject):
         except Exception as e:
             debug_print(f"[DEBUG] Could not get clipboard content: {e}")
 
+        unique_marker = f"GRephraser-{time.time()}"
         try:
-            pyperclip.copy('')
+            pyperclip.copy(unique_marker)
         except Exception as e:
-            debug_print(f"[DEBUG] Could not clear clipboard: {e}")
-            return # Cannot proceed if we can't clear the clipboard
+            debug_print(f"[DEBUG] Could not set unique marker to clipboard: {e}")
+            return
 
-        time.sleep(0.05) # Small delay before sending keys
+        time.sleep(0.05)
         keyboard.press_and_release('ctrl+c')
-        
+
         text = ''
         for attempt in range(retries):
             time.sleep(delay)
@@ -460,10 +468,10 @@ class SelectionListener(QtCore.QObject):
                 text = pyperclip.paste()
             except Exception as e:
                 debug_print(f"[DEBUG] Could not paste on attempt {attempt+1}: {e}")
-                continue # Try again
+                continue
 
             debug_print(f'[DEBUG] Clipboard content (attempt {attempt+1}, len={len(text)}):', repr(text))
-            if text:
+            if text and text != unique_marker:
                 break
         
         if text.strip() and len(text.strip()) >= 100:
@@ -494,7 +502,6 @@ class SelectionListener(QtCore.QObject):
         self.button = FloatingButton(text, source_hwnd)
         self.button.overlay_created.connect(self.track_overlay)
         self.button.show_near_cursor()
-        self.last_text = ''
 
     def track_overlay(self, overlay):
         self.overlay = overlay
@@ -514,10 +521,12 @@ def get_startup_shortcut_path():
 
 def enable_startup():
     shortcut_path, exe_path, ico_path, png_path = get_startup_shortcut_path()
+    working_dir = os.path.dirname(exe_path)
     import pythoncom
-    from win32com.shell import shell, shellcon
+    from win32com.shell import shell, shellcon # type: ignore
     shell_link = pythoncom.CoCreateInstance(shell.CLSID_ShellLink, None, pythoncom.CLSCTX_INPROC_SERVER, shell.IID_IShellLink)
     shell_link.SetPath(exe_path)
+    shell_link.SetWorkingDirectory(working_dir)
     shell_link.SetDescription('GRephraser')
     if os.path.exists(ico_path):
         shell_link.SetIconLocation(ico_path, 0)
@@ -656,10 +665,10 @@ class NotificationWindow(QtWidgets.QWidget):
 class GlobalPasteHotkey(QtCore.QObject):
     def __init__(self, parent=None):
         super().__init__(parent)
-        keyboard.add_hotkey('ctrl+shift+v', self.paste_clipboard)
+        #keyboard.add_hotkey('ctrl+shift+v', self.paste_clipboard)
 
     def paste_clipboard(self):
-        debug_print('[DEBUG] Global hotkey Ctrl+Shift+V pressed, sending Ctrl+V')
+        debug_print('[DEBUG] Sending Ctrl+V')
         keyboard.press_and_release('ctrl+v')
 
 def main():
