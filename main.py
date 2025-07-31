@@ -384,6 +384,7 @@ class RephraseOverlay(QtWidgets.QWidget):
                 debug_print('[DEBUG] Pasted rephrased text.')
                 notif = NotificationWindow('Rephrased text has been pasted.')
                 notif.show()
+                time.sleep(0.1)
             except Exception as e:
                 debug_print(f'[DEBUG] Failed to paste: {e}')
                 notif = NotificationWindow('Rephrased text copied!<br>Could not paste automatically.')
