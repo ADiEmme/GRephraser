@@ -28,17 +28,13 @@ def is_own_window_focused():
         print(f"[is_own_window_focused] Exception: {e}")
         return False
 
-SUPPORTED_APPS = [
-    'outlook.exe', 'notepad.exe', 'chrome.exe'
-]
-
 def is_supported_app_focused():
     try:
         hwnd = win32gui.GetForegroundWindow()
         _, pid = win32process.GetWindowThreadProcessId(hwnd)
         proc = psutil.Process(pid)
         exe = proc.name().lower()
-        return exe in SUPPORTED_APPS
+        return exe in settings.get('supported_apps', [])
     except Exception as e:
         debug_print('[DEBUG] is_supported_app_focused error:', e)
         return False
@@ -62,7 +58,8 @@ DEFAULT_SETTINGS = {
     'api_key': '',
     'api_url': 'https://api.openai.com/v1',
     'model': 'gpt-3.5-turbo',
-    'prompt': 'You are a helpful assistant that rephrases text in a clear and concise way.'
+    'prompt': 'You are a helpful assistant that rephrases text in a clear and concise way.',
+    'supported_apps': ['outlook.exe', 'notepad.exe', 'chrome.exe']
 }
 settings = {}
 
@@ -417,14 +414,28 @@ class SelectionListener(QtCore.QObject):
 
     def on_mouse_down(self, *args, **kwargs):
         self.mouse_down_pos = mouse.get_position()
+        debug_print('[DEBUG] Mouse down position: ', self.mouse_down_pos)
 
     def on_mouse_release(self, *args, **kwargs):
+        debug_print('[DEBUG] Mouse released')
         if is_own_window_focused():
             return
+        
         mouse_up_pos = mouse.get_position()
-        if self.mouse_down_pos and (abs(mouse_up_pos[0] - self.mouse_down_pos[0]) > 3 or abs(mouse_up_pos[1] - self.mouse_down_pos[1]) > 3):
+        debug_print('[DEBUG] Mouse position (up and down)', mouse_up_pos, self.mouse_down_pos)
+
+        # A drag is detected if the mouse moved significantly.
+        drag_detected = self.mouse_down_pos and \
+                        (abs(mouse_up_pos[0] - self.mouse_down_pos[0]) > 3 or \
+                         abs(mouse_up_pos[1] - self.mouse_down_pos[1]) > 3)
+        
+        # Fallback for missed mouse_down events. If mouse_down_pos is None,
+        # we still try to capture the selection, as the 'down' event might have been missed by the hook.
+        if drag_detected or self.mouse_down_pos is None:
             time.sleep(0.25)
             self.try_show_button_with_retry(retries=5, delay=0.25)
+        
+        # Always reset the position for the next action.
         self.mouse_down_pos = None
 
     def on_key_release(self, event):
@@ -548,6 +559,15 @@ def is_startup_enabled():
     return os.path.exists(shortcut_path)
 
 class SettingsWindow(QtWidgets.QMainWindow):
+    PREDEFINED_APPS = {
+        "Microsoft Outlook": "outlook.exe",
+        "Google Chrome": "chrome.exe",
+        "Notepad": "notepad.exe",
+        "Visual Studio Code": "code.exe",
+        "Slack": "slack.exe",
+        "Microsoft Word": "winword.exe"
+    }
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle('Settings')
@@ -556,10 +576,13 @@ class SettingsWindow(QtWidgets.QMainWindow):
         self.tabs = QtWidgets.QTabWidget()
         self.general_tab = QtWidgets.QWidget()
         self.parameters_tab = QtWidgets.QWidget()
+        self.apps_tab = QtWidgets.QWidget()
         self.tabs.addTab(self.general_tab, 'General')
         self.tabs.addTab(self.parameters_tab, 'Parameters')
+        self.tabs.addTab(self.apps_tab, 'Applications')
         self.init_general_tab()
         self.init_parameters_tab()
+        self.init_apps_tab()
         btn_box = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Save | QtWidgets.QDialogButtonBox.Cancel)
         btn_box.accepted.connect(self.save_and_close)
         btn_box.rejected.connect(self.close)
@@ -591,18 +614,42 @@ class SettingsWindow(QtWidgets.QMainWindow):
         layout.addRow('Prompt:', self.prompt_edit)
         self.parameters_tab.setLayout(layout)
 
+    def init_apps_tab(self):
+        layout = QtWidgets.QVBoxLayout()
+        label = QtWidgets.QLabel("Enable GRephraser for these applications:")
+        layout.addWidget(label)
+        self.app_checkboxes = {}
+        for display_name, exe_name in self.PREDEFINED_APPS.items():
+            checkbox = QtWidgets.QCheckBox(display_name)
+            self.app_checkboxes[exe_name] = checkbox
+            layout.addWidget(checkbox)
+        layout.addStretch()
+        self.apps_tab.setLayout(layout)
+
     def load_current_settings(self):
         self.api_key_edit.setText(settings.get('api_key', ''))
         self.api_url_edit.setText(settings.get('api_url', ''))
         self.model_edit.setText(settings.get('model', 'gpt-3.5-turbo'))
         self.prompt_edit.setPlainText(settings.get('prompt', ''))
+        
+        enabled_apps = settings.get('supported_apps', [])
+        for exe_name, checkbox in self.app_checkboxes.items():
+            checkbox.setChecked(exe_name in enabled_apps)
 
     def save_and_close(self):
         settings['api_key'] = self.api_key_edit.text().strip()
         settings['api_url'] = self.api_url_edit.text().strip()
         settings['model'] = self.model_edit.text().strip() or 'gpt-3.5-turbo'
         settings['prompt'] = self.prompt_edit.toPlainText().strip()
+        
+        enabled_apps = []
+        for exe_name, checkbox in self.app_checkboxes.items():
+            if checkbox.isChecked():
+                enabled_apps.append(exe_name)
+        settings['supported_apps'] = enabled_apps
+        
         save_settings()
+        
         if self.startup_checkbox.isChecked():
             try:
                 enable_startup()
