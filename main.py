@@ -159,48 +159,84 @@ class RephraseWorker(QtCore.QThread):
             openai.base_url = settings['api_url']
 
             lines = self.selected_text.split('\n')
-            processed_lines = []
-            code_lines_indices = []
+            reconstructed_lines = list(lines)
+            
+            lines_to_rephrase_map = {}  # Maps original index to the line content
             for idx, line in enumerate(lines):
-                if (
+                if not (
                     line.strip().startswith('#') or
                     line.strip().startswith('%') or
                     self.is_code_like(line)
                 ):
-                    processed_lines.append(line)
-                    code_lines_indices.append(idx)
-                else:
-                    processed_lines.append(f"[[REPHRASE:{idx}]] {line}")
-            text_for_rephrase = '\n'.join(processed_lines)
+                    lines_to_rephrase_map[idx] = line
+
+            if not lines_to_rephrase_map:
+                self.result_ready.emit(self.selected_text, False)
+                return
+
+            lines_to_send = list(lines_to_rephrase_map.values())
+            input_json_str = json.dumps({"lines_to_rephrase": lines_to_send})
+
             system_prompt = (
                 settings['prompt']
-                + " DO NOT change or rephrase any line that starts with #, %, or appears to be code. "
-                + "Only rephrase lines that start with [[REPHRASE:IDX]]. "
-                + "For any such line, rephrase only the part after the marker and keep code/context lines as they are."
+                + " You will be given a JSON object with a key 'lines_to_rephrase' containing a list of strings. "
+                + "Your task is to rephrase each string in the list. "
+                + "You MUST respond with a JSON object that contains a single key, 'rephrased_lines', "
+                + "which is a list of the rephrased strings. "
+                + "The returned list must have the exact same number of items as the input list."
             )
 
             messages = [
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"Rephrase the following text as per instructions:\n\n{text_for_rephrase}"}
+                {"role": "user", "content": input_json_str}
             ]
+            
             response = openai.chat.completions.create(
                 model=settings.get('model', 'gpt-3.5-turbo'),
                 messages=messages,
-                max_tokens=500,
+                max_tokens=1024, # Increased max_tokens for JSON overhead
                 temperature=0.7,
-                timeout=15.0
+                timeout=20.0, # Increased timeout for potentially longer processing
+                # response_format={"type": "json_object"} # Ideal, but might not be supported by all endpoints
             )
-            reply = response.choices[0].message.content.strip()
-            debug_print('[DEBUG] Raw OpenAI response:\n', reply)
-            # Remove all [[REPHRASE:idx]] tags from the reply (robust)
-            cleaned_reply = re.sub(r"\[\[REPHRASE:\s*\d+\]\]\s*", "", reply, flags=re.IGNORECASE | re.MULTILINE)
-            self.result_ready.emit(cleaned_reply, False)
+            
+            reply_content = response.choices[0].message.content.strip()
+            debug_print('[DEBUG] Raw OpenAI response:\n', reply_content)
+
+            # Extract JSON from the reply, which might be wrapped in markdown
+            match = re.search(r"\{.*\}", reply_content, re.DOTALL)
+            if match:
+                json_str = match.group(0)
+            else:
+                self.result_ready.emit(f"Error: Model did not return valid JSON.\n\n{reply_content}", True)
+                return
+
+            try:
+                response_data = json.loads(json_str)
+                rephrased_lines = response_data.get("rephrased_lines", [])
+            except json.JSONDecodeError:
+                self.result_ready.emit(f"Error: Failed to decode JSON from model response.\n\n{reply_content}", True)
+                return
+
+            if not isinstance(rephrased_lines, list) or len(rephrased_lines) != len(lines_to_send):
+                error_msg = (
+                    f"Error: Rephrased data is invalid or has a mismatched number of lines "
+                    f"({len(rephrased_lines)}) than expected ({len(lines_to_send)})."
+                )
+                self.result_ready.emit(f"{error_msg}\n\n{reply_content}", True)
+                return
+
+            # Reconstruct the text
+            rephrased_lines_iter = iter(rephrased_lines)
+            for index in lines_to_rephrase_map.keys():
+                reconstructed_lines[index] = next(rephrased_lines_iter)
+
+            final_text = '\n'.join(reconstructed_lines)
+            self.result_ready.emit(final_text, False)
+
         except Exception as e:
             debug_print('[DEBUG] error', e)
-            # Clean any tags from the error string if present
-            error_str = str(e)
-            cleaned_error = re.sub(r"\[\[REPHRASE:\s*\d+\]\]\s*", "", error_str, flags=re.IGNORECASE | re.MULTILINE)
-            self.result_ready.emit(f"Error: {cleaned_error}", True)
+            self.result_ready.emit(f"Error: {str(e)}", True)
 
     def is_code_like(self, line):
         stripped = line.strip()
@@ -335,7 +371,7 @@ class RephraseOverlay(QtWidgets.QWidget):
         debug_print('[DEBUG] on_result_ready called with:', repr(result), 'is_error:', is_error)
         # Always clean tags before display
         if isinstance(result, str):
-            result = re.sub(r"\[\[REPHRASE:\s*\d+\]\]\s*", "", result, flags=re.IGNORECASE | re.MULTILINE).lstrip('\n')
+            result = re.sub(r"\[\[REPHRASE:\s*\d+\]\]\s*", "", result, flags=re.IGNORECASE | re.MULTILINE)
         self.loading_label.hide()
         if is_error:
             debug_print('[DEBUG] Setting error text in label:', repr(result))
@@ -478,6 +514,17 @@ class SelectionListener(QtCore.QObject):
             time.sleep(delay)
             try:
                 text = pyperclip.paste()
+                # Conditionally clean clipboard text based on its format.
+                if '\r\n\r\n\r\n\r\n' in text:
+                    # This sequence is highly specific to Outlook's clipboard format.
+                    debug_print('[DEBUG] Outlook-style CRLF detected. Applying special cleaning.')
+                    text = text.replace('\r\n\r\n\r\n\r\n', '\n\n') # Paragraphs
+                    text = text.replace('\r\n\r\n', '\n') # Line breaks
+                    text = text.replace('\r\n', '\n') # Cleanup
+                else:
+                    # Standard text from apps like Notepad. Just normalize line endings.
+                    debug_print('[DEBUG] Standard CRLF detected. Applying simple cleaning.')
+                    text = text.replace('\r\n', '\n')
             except Exception as e:
                 debug_print(f"[DEBUG] Could not paste on attempt {attempt+1}: {e}")
                 continue
@@ -558,6 +605,23 @@ def is_startup_enabled():
     shortcut_path, _, _, _ = get_startup_shortcut_path()
     return os.path.exists(shortcut_path)
 
+class ModelFetchWorker(QtCore.QThread):
+    models_ready = QtCore.pyqtSignal(list, str)
+
+    def __init__(self, api_key, api_url):
+        super().__init__()
+        self.api_key = api_key
+        self.api_url = api_url
+
+    def run(self):
+        try:
+            client = openai.OpenAI(api_key=self.api_key, base_url=self.api_url)
+            models = client.models.list()
+            model_ids = sorted([model.id for model in models.data])
+            self.models_ready.emit(model_ids, "")
+        except Exception as e:
+            self.models_ready.emit([], str(e))
+
 class SettingsWindow(QtWidgets.QMainWindow):
     PREDEFINED_APPS = {
         "Microsoft Outlook": "outlook.exe",
@@ -571,7 +635,7 @@ class SettingsWindow(QtWidgets.QMainWindow):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle('Settings')
-        self.setMinimumSize(400, 300)
+        self.setMinimumSize(450, 400)
         self.setWindowIcon(QtGui.QIcon(get_icon_path()))
         self.tabs = QtWidgets.QTabWidget()
         self.general_tab = QtWidgets.QWidget()
@@ -593,6 +657,7 @@ class SettingsWindow(QtWidgets.QMainWindow):
         container.setLayout(layout)
         self.setCentralWidget(container)
         self.load_current_settings()
+        self.worker = None
 
     def init_general_tab(self):
         layout = QtWidgets.QVBoxLayout()
@@ -605,14 +670,55 @@ class SettingsWindow(QtWidgets.QMainWindow):
     def init_parameters_tab(self):
         layout = QtWidgets.QFormLayout()
         self.api_key_edit = QtWidgets.QLineEdit()
+        self.api_key_edit.setEchoMode(QtWidgets.QLineEdit.Password)
         self.api_url_edit = QtWidgets.QLineEdit()
-        self.model_edit = QtWidgets.QLineEdit()
+        
+        model_layout = QtWidgets.QHBoxLayout()
+        self.model_combo = QtWidgets.QComboBox()
+        self.model_combo.setMinimumWidth(200)
+        self.fetch_models_btn = QtWidgets.QPushButton("Fetch Models")
+        self.fetch_models_btn.clicked.connect(self.fetch_models)
+        model_layout.addWidget(self.model_combo)
+        model_layout.addWidget(self.fetch_models_btn)
+        
         self.prompt_edit = QtWidgets.QPlainTextEdit()
+        
         layout.addRow('API Key:', self.api_key_edit)
         layout.addRow('API URL:', self.api_url_edit)
-        layout.addRow('Model:', self.model_edit)
+        layout.addRow('Model:', model_layout)
         layout.addRow('Prompt:', self.prompt_edit)
         self.parameters_tab.setLayout(layout)
+
+    def fetch_models(self):
+        api_key = self.api_key_edit.text().strip()
+        api_url = self.api_url_edit.text().strip()
+        if not api_key or not api_url:
+            QtWidgets.QMessageBox.warning(self, "API Info Missing", "Please enter both an API Key and API URL.")
+            return
+        
+        self.fetch_models_btn.setText("Fetching...")
+        self.fetch_models_btn.setEnabled(False)
+        
+        self.worker = ModelFetchWorker(api_key, api_url)
+        self.worker.models_ready.connect(self.on_models_fetched)
+        self.worker.start()
+
+    def on_models_fetched(self, models, error_str):
+        self.fetch_models_btn.setText("Fetch Models")
+        self.fetch_models_btn.setEnabled(True)
+        
+        if error_str:
+            QtWidgets.QMessageBox.critical(self, "Error", f"Failed to fetch models:\n{error_str}")
+            return
+        
+        self.model_combo.clear()
+        self.model_combo.addItems(models)
+        
+        current_model = settings.get('model')
+        if current_model in models:
+            self.model_combo.setCurrentText(current_model)
+        
+        QtWidgets.QMessageBox.information(self, "Success", f"Successfully fetched {len(models)} models.")
 
     def init_apps_tab(self):
         layout = QtWidgets.QVBoxLayout()
@@ -629,7 +735,13 @@ class SettingsWindow(QtWidgets.QMainWindow):
     def load_current_settings(self):
         self.api_key_edit.setText(settings.get('api_key', ''))
         self.api_url_edit.setText(settings.get('api_url', ''))
-        self.model_edit.setText(settings.get('model', 'gpt-3.5-turbo'))
+        
+        # Add the current model to the combo box, even if it's not in the fetched list yet
+        current_model = settings.get('model', 'gpt-3.5-turbo')
+        self.model_combo.clear()
+        self.model_combo.addItem(current_model)
+        self.model_combo.setCurrentText(current_model)
+
         self.prompt_edit.setPlainText(settings.get('prompt', ''))
         
         enabled_apps = settings.get('supported_apps', [])
@@ -639,7 +751,7 @@ class SettingsWindow(QtWidgets.QMainWindow):
     def save_and_close(self):
         settings['api_key'] = self.api_key_edit.text().strip()
         settings['api_url'] = self.api_url_edit.text().strip()
-        settings['model'] = self.model_edit.text().strip() or 'gpt-3.5-turbo'
+        settings['model'] = self.model_combo.currentText()
         settings['prompt'] = self.prompt_edit.toPlainText().strip()
         
         enabled_apps = []
