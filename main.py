@@ -218,13 +218,13 @@ class RephraseWorker(QtCore.QThread):
                 self.result_ready.emit(f"Error: Failed to decode JSON from model response.\n\n{reply_content}", True)
                 return
 
-            if not isinstance(rephrased_lines, list) or len(rephrased_lines) != len(lines_to_send):
+            '''if not isinstance(rephrased_lines, list) or len(rephrased_lines) != len(lines_to_send):
                 error_msg = (
                     f"Error: Rephrased data is invalid or has a mismatched number of lines "
                     f"({len(rephrased_lines)}) than expected ({len(lines_to_send)})."
                 )
                 self.result_ready.emit(f"{error_msg}\n\n{reply_content}", True)
-                return
+                return'''
 
             # Reconstruct the text
             rephrased_lines_iter = iter(rephrased_lines)
@@ -477,8 +477,8 @@ class SelectionListener(QtCore.QObject):
     def on_key_release(self, event):
         if is_own_window_focused():
             return
-        if event.name in ['left', 'right', 'up', 'down', 'a'] and (keyboard.is_pressed('shift') or keyboard.is_pressed('ctrl')):
-            self.try_show_button()
+        #if event.name in ['left', 'right', 'up', 'down', 'a'] and (keyboard.is_pressed('shift') or keyboard.is_pressed('ctrl')):
+        #    self.try_show_button()
 
     def try_show_button(self):
         # Use the more reliable retry mechanism
@@ -499,12 +499,12 @@ class SelectionListener(QtCore.QObject):
         except Exception as e:
             debug_print(f"[DEBUG] Could not get clipboard content: {e}")
 
-        unique_marker = f"GRephraser-{time.time()}"
-        try:
-            pyperclip.copy(unique_marker)
-        except Exception as e:
-            debug_print(f"[DEBUG] Could not set unique marker to clipboard: {e}")
-            return
+        #unique_marker = f"GRephraser-{time.time()}"
+        #try:
+        #    pyperclip.copy(unique_marker)
+        # except Exception as e:
+        #    debug_print(f"[DEBUG] Could not set unique marker to clipboard: {e}")
+        #    return
 
         time.sleep(0.05)
         keyboard.press_and_release('ctrl+c')
@@ -530,8 +530,8 @@ class SelectionListener(QtCore.QObject):
                 continue
 
             debug_print(f'[DEBUG] Clipboard content (attempt {attempt+1}, len={len(text)}):', repr(text))
-            if text and text != unique_marker:
-                break
+            #if text and text != unique_marker:
+            #    break
         
         if text.strip() and len(text.strip()) >= 100:
             debug_print('[DEBUG] Scheduling floating button for:', text[:50])
