@@ -18,6 +18,9 @@ import shutil
 import re
 
 APP_PID = os.getpid()
+DOUBLE_TAP_MAX_DELAY = 0.35  # seconds between taps
+last_shift_time = 0
+DEBUG = bool(os.environ.get('REPHRASER_DEBUG'))
 
 def is_own_window_focused():
     try:
@@ -38,8 +41,6 @@ def is_supported_app_focused():
     except Exception as e:
         debug_print('[DEBUG] is_supported_app_focused error:', e)
         return False
-
-DEBUG = bool(os.environ.get('REPHRASER_DEBUG'))
 
 if DEBUG:
     http.client.HTTPConnection.debuglevel = 0
@@ -443,71 +444,47 @@ class RephraseOverlay(QtWidgets.QWidget):
         debug_print('[DEBUG] RephraseOverlay shown at', pos.x() + 10, pos.y() + 10)
 
 class SelectionListener(QtCore.QObject):
-    request_show_button = QtCore.pyqtSignal(str, int)
-    hotkey_triggered = QtCore.pyqtSignal()
+    request_show_rephrase_overlay = QtCore.pyqtSignal(str, int)
 
     def __init__(self, app):
         super().__init__()
         self.app = app
-        self.button = None
-        self.overlay = None  # Track the current overlay
-        self.mouse_down_pos = None
-        self.request_show_button.connect(self.show_button)
-        self.hotkey_triggered.connect(self.trigger_rephrase)
-        mouse.on_button(self.on_mouse_down, buttons=mouse.LEFT, types=mouse.DOWN)
-        mouse.on_button(self.on_mouse_release, buttons=mouse.LEFT, types=mouse.UP)
-        keyboard.on_release(self.on_key_release)
+        self.overlay = None
+        self.request_show_rephrase_overlay.connect(self.show_rephrase_overlay)
 
-    def on_mouse_down(self, *args, **kwargs):
-        self.mouse_down_pos = mouse.get_position()
-        debug_print('[DEBUG] Mouse down position: ', self.mouse_down_pos)
-
-    def on_mouse_release(self, *args, **kwargs):
-        debug_print('[DEBUG] Mouse released')
-        if is_own_window_focused():
-            return
-        
-        mouse_up_pos = mouse.get_position()
-        debug_print('[DEBUG] Mouse position (up and down)', mouse_up_pos, self.mouse_down_pos)
-
-        # A drag is detected if the mouse moved significantly, suggesting a text selection.
-        # A vertical drag of more than 12 pixels is likely a selection across lines.
-        # A horizontal drag of more than 50 pixels is likely an intentional selection on a single line.
-        drag_detected = False
-        if self.mouse_down_pos:
-            vertical_drag = abs(mouse_up_pos[1] - self.mouse_down_pos[1]) > 12
-            horizontal_drag = abs(mouse_up_pos[0] - self.mouse_down_pos[0]) > 50
-            drag_detected = vertical_drag or horizontal_drag
-        
-        # Only proceed if a significant drag was detected (to avoid false positives like checkbox clicks)
-        if drag_detected:
-            time.sleep(0.25)
-            self.try_show_button_with_retry(retries=5, delay=0.25)
-        else:
-            debug_print('[DEBUG] No significant drag detected; not attempting to capture selection.')
-        
-        # Always reset the position for the next action.
-        self.mouse_down_pos = None
-
-    def on_key_release(self, event):
-        if is_own_window_focused():
-            return
-        #if event.name in ['left', 'right', 'up', 'down', 'a'] and (keyboard.is_pressed('shift') or keyboard.is_pressed('ctrl')):
-        #    self.try_show_button()
 
     def trigger_rephrase(self):
         if not is_supported_app_focused():
             debug_print('[DEBUG] Hotkey triggered, but not a supported app.')
             return
+
+        source_hwnd = win32gui.GetForegroundWindow()
+        old_clip = ''
+        try:
+            old_clip = pyperclip.paste()
+        except Exception as e:
+            debug_print(f"[DEBUG] Could not get clipboard content: {e}")
+
+        time.sleep(0.05)
+        keyboard.press_and_release('ctrl+c')
+        time.sleep(0.05)
+
+        text = ''
+        try:
+            text = pyperclip.paste()
+        except Exception as e:
+            debug_print(f"[DEBUG] Could not paste: {e}")
+
+        if text and text != old_clip:
+            debug_print('[DEBUG] Hotkey pressed, showing rephrase overlay for:', text[:50])
+            self.request_show_rephrase_overlay.emit(text, source_hwnd)
+        else:
+            debug_print('[DEBUG] No selection copied, not showing overlay.')
         
-        debug_print('[DEBUG] Hotkey pressed, attempting to rephrase selection.')
-        self.try_show_button_with_retry(min_len=10)
-
-    def try_show_button(self):
-        # Use the more reliable retry mechanism
-        self.try_show_button_with_retry()
-
-    def try_show_button_with_retry(self, retries=10, delay=0.05, min_len=100):
+        try:
+            pyperclip.copy(old_clip)
+        except Exception as e:
+            debug_print(f"[DEBUG] Could not restore clipboard: {e}")
         if not is_supported_app_focused():
             debug_print('[DEBUG] Not a supported app, not showing button.')
             return
@@ -533,61 +510,31 @@ class SelectionListener(QtCore.QObject):
         keyboard.press_and_release('ctrl+c')
 
         text = ''
-        for attempt in range(retries):
-            time.sleep(delay)
-            try:
-                text = pyperclip.paste()
-                # Conditionally clean clipboard text based on its format.
-                if '\r\n\r\n\r\n\r\n' in text:
-                    # This sequence is highly specific to Outlook's clipboard format.
-                    debug_print('[DEBUG] Outlook-style CRLF detected. Applying special cleaning.')
-                    text = text.replace('\r\n\r\n\r\n\r\n', '\n\n') # Paragraphs
-                    text = text.replace('\r\n\r\n', '\n') # Line breaks
-                    text = text.replace('\r\n', '\n') # Cleanup
-                else:
-                    # Standard text from apps like Notepad. Just normalize line endings.
-                    debug_print('[DEBUG] Standard CRLF detected. Applying simple cleaning.')
-                    text = text.replace('\r\n', '\n')
-            except Exception as e:
-                debug_print(f"[DEBUG] Could not paste on attempt {attempt+1}: {e}")
-                continue
 
-            debug_print(f'[DEBUG] Clipboard content (attempt {attempt+1}, len={len(text)}):', repr(text))
-            #if text and text != unique_marker:
-            #    break
-        
-        if text.strip() and len(text.strip()) >= min_len:
-            debug_print('[DEBUG] Scheduling floating button for:', text[:50])
-            self.request_show_button.emit(text, source_hwnd)
+        text = pyperclip.paste()
+        # Conditionally clean clipboard text based on its format.
+        if '\r\n\r\n\r\n\r\n' in text:
+             # This sequence is highly specific to Outlook's clipboard format.
+            debug_print('[DEBUG] Outlook-style CRLF detected. Applying special cleaning.')
+            text = text.replace('\r\n\r\n\r\n\r\n', '\n\n') # Paragraphs
+            text = text.replace('\r\n\r\n', '\n') # Line breaks
+            text = text.replace('\r\n', '\n') # Cleanup
         else:
-            try:
-                pyperclip.copy(old_clip)
-            except Exception as e:
-                debug_print(f"[DEBUG] Could not restore clipboard: {e}")
+            # Standard text from apps like Notepad. Just normalize line endings.
+            debug_print('[DEBUG] Standard CRLF detected. Applying simple cleaning.')
+            text = text.replace('\r\n', '\n')
+        
 
-            if not text.strip():
-                debug_print(f'[DEBUG] Failed to get selection from clipboard. Clipboard restored.')
-            else:
-                debug_print(f'[DEBUG] Selection too short (len={len(text.strip())}), not showing button. Clipboard restored.')
-
-    def show_button(self, text, source_hwnd):
-        debug_print('[DEBUG] show_button called with:', repr(text))
-        # Close any existing overlay (if any)
+    def show_rephrase_overlay(self, text, source_hwnd):
+        debug_print('[DEBUG] show_rephrase_overlay called with:', repr(text))
         if self.overlay is not None:
             try:
                 self.overlay.close()
             except Exception as e:
                 debug_print('[DEBUG] Error closing previous overlay:', e)
             self.overlay = None
-        if self.button is not None:
-            self.button.close()
-        self.button = FloatingButton(text, source_hwnd)
-        self.button.overlay_created.connect(self.track_overlay)
-        self.button.show_near_cursor()
-
-
-    def track_overlay(self, overlay):
-        self.overlay = overlay
+        self.overlay = RephraseOverlay(text, source_hwnd)
+        self.overlay.show_near_cursor()
 
 def get_startup_shortcut_path():
     startup_dir = os.path.join(os.environ['APPDATA'], r'Microsoft\Windows\Start Menu\Programs\Startup')
@@ -846,6 +793,21 @@ class NotificationWindow(QtWidgets.QWidget):
         self.move(screen.center() - self.rect().center())
         QtCore.QTimer.singleShot(duration, self.close)
 
+class DoubleCtrlListener:
+    def __init__(self, callback):
+        self.callback = callback
+        self.last_ctrl_press_time = 0
+        keyboard.on_press_key("ctrl", self.on_ctrl_press, suppress=False)
+
+    def on_ctrl_press(self, key_event):
+        current_time = time.time()
+        if current_time - self.last_ctrl_press_time < 0.3:
+            self.callback()
+            # Reset the timer to prevent immediate re-triggering
+            self.last_ctrl_press_time = 0
+        else:
+            self.last_ctrl_press_time = current_time
+
 class GlobalPasteHotkey(QtCore.QObject):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -871,16 +833,14 @@ def main():
     paste_hotkey = GlobalPasteHotkey()
     
     # Set up the global hotkey for rephrasing
-    try:
-        keyboard.add_hotkey('alt+shift+r', listener.trigger_rephrase)
-        debug_print('[DEBUG] Registered hotkey alt+shift+r')
-    except Exception as e:
-        debug_print(f'[DEBUG] Failed to register hotkey: {e}')
+    double_ctrl_listener = DoubleCtrlListener(listener.trigger_rephrase)
+    debug_print('[DEBUG] Registered double ctrl listener')
 
     try:
         sys.exit(app.exec_())
     except KeyboardInterrupt:
         debug_print('[DEBUG] KeyboardInterrupt caught, exiting gracefully.')
+
 
 if __name__ == '__main__':
     main()
