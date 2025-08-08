@@ -444,6 +444,7 @@ class RephraseOverlay(QtWidgets.QWidget):
 
 class SelectionListener(QtCore.QObject):
     request_show_button = QtCore.pyqtSignal(str, int)
+    hotkey_triggered = QtCore.pyqtSignal()
 
     def __init__(self, app):
         super().__init__()
@@ -452,6 +453,7 @@ class SelectionListener(QtCore.QObject):
         self.overlay = None  # Track the current overlay
         self.mouse_down_pos = None
         self.request_show_button.connect(self.show_button)
+        self.hotkey_triggered.connect(self.trigger_rephrase)
         mouse.on_button(self.on_mouse_down, buttons=mouse.LEFT, types=mouse.DOWN)
         mouse.on_button(self.on_mouse_release, buttons=mouse.LEFT, types=mouse.UP)
         keyboard.on_release(self.on_key_release)
@@ -493,11 +495,19 @@ class SelectionListener(QtCore.QObject):
         #if event.name in ['left', 'right', 'up', 'down', 'a'] and (keyboard.is_pressed('shift') or keyboard.is_pressed('ctrl')):
         #    self.try_show_button()
 
+    def trigger_rephrase(self):
+        if not is_supported_app_focused():
+            debug_print('[DEBUG] Hotkey triggered, but not a supported app.')
+            return
+        
+        debug_print('[DEBUG] Hotkey pressed, attempting to rephrase selection.')
+        self.try_show_button_with_retry(min_len=10)
+
     def try_show_button(self):
         # Use the more reliable retry mechanism
         self.try_show_button_with_retry()
 
-    def try_show_button_with_retry(self, retries=10, delay=0.05):
+    def try_show_button_with_retry(self, retries=10, delay=0.05, min_len=100):
         if not is_supported_app_focused():
             debug_print('[DEBUG] Not a supported app, not showing button.')
             return
@@ -546,7 +556,7 @@ class SelectionListener(QtCore.QObject):
             #if text and text != unique_marker:
             #    break
         
-        if text.strip() and len(text.strip()) >= 100:
+        if text.strip() and len(text.strip()) >= min_len:
             debug_print('[DEBUG] Scheduling floating button for:', text[:50])
             self.request_show_button.emit(text, source_hwnd)
         else:
@@ -574,6 +584,7 @@ class SelectionListener(QtCore.QObject):
         self.button = FloatingButton(text, source_hwnd)
         self.button.overlay_created.connect(self.track_overlay)
         self.button.show_near_cursor()
+
 
     def track_overlay(self, overlay):
         self.overlay = overlay
@@ -858,6 +869,14 @@ def main():
     tray = SystemTrayIcon(app)
     listener = SelectionListener(app)
     paste_hotkey = GlobalPasteHotkey()
+    
+    # Set up the global hotkey for rephrasing
+    try:
+        keyboard.add_hotkey('alt+shift+r', listener.trigger_rephrase)
+        debug_print('[DEBUG] Registered hotkey alt+shift+r')
+    except Exception as e:
+        debug_print(f'[DEBUG] Failed to register hotkey: {e}')
+
     try:
         sys.exit(app.exec_())
     except KeyboardInterrupt:
