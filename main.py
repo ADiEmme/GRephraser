@@ -425,6 +425,7 @@ class RephraseOverlay(QtWidgets.QWidget):
                 notif = NotificationWindow('Rephrased text has been pasted.')
                 notif.show()
                 time.sleep(0.1)
+                pyperclip.copy('')
             except Exception as e:
                 debug_print(f'[DEBUG] Failed to paste: {e}')
                 notif = NotificationWindow('Rephrased text copied!<br>Could not paste automatically.')
@@ -476,11 +477,12 @@ class SelectionListener(QtCore.QObject):
             horizontal_drag = abs(mouse_up_pos[0] - self.mouse_down_pos[0]) > 50
             drag_detected = vertical_drag or horizontal_drag
         
-        # Fallback for missed mouse_down events. If mouse_down_pos is None,
-        # we still try to capture the selection, as the 'down' event might have been missed by the hook.
-        if drag_detected or self.mouse_down_pos is None:
+        # Only proceed if a significant drag was detected (to avoid false positives like checkbox clicks)
+        if drag_detected:
             time.sleep(0.25)
             self.try_show_button_with_retry(retries=5, delay=0.25)
+        else:
+            debug_print('[DEBUG] No significant drag detected; not attempting to capture selection.')
         
         # Always reset the position for the next action.
         self.mouse_down_pos = None
