@@ -179,11 +179,18 @@ class RephraseWorker(QtCore.QThread):
 
             system_prompt = (
                 settings['prompt']
-                + " You will be given a JSON object with a key 'lines_to_rephrase' containing a list of strings. "
-                + "Your task is to rephrase each string in the list. "
-                + "You MUST respond with a JSON object that contains a single key, 'rephrased_lines', "
-                + "which is a list of the rephrased strings. "
-                + "The returned list must have the exact same number of items as the input list."
+                #+ " You will be given a JSON object with a key 'lines_to_rephrase' containing a list of strings. "
+                #+ "Your task is to rephrase each string in the list. "
+                #+ "You MUST respond with a JSON object that contains a single key, 'rephrased_lines', "
+                #+ "which is a list of the rephrased strings. "
+                #+ "The returned list must have the exact same number of items as the input list."
+                #+ "Most of the time, these lines are all part of the same email or text. "
+                + "You will be given a JSON object with a key 'lines_to_rephrase' containing a list of strings. "
+                + "These strings are all part of the same email or message and must be understood in that shared context."
+                + "Your task is to rephrase each line while preserving the meaning and tone appropriate to the overall message. "
+                + "Pay attention to how the lines relate to one another to maintain consistency, flow, and coherence."
+                + "You MUST respond with a JSON object containing a single key, 'rephrased_lines', which is a list of the rephrased strings. "
+                + "The output list should have the exact same number of items, in the same order, as the input list."
             )
 
             messages = [
@@ -460,10 +467,14 @@ class SelectionListener(QtCore.QObject):
         mouse_up_pos = mouse.get_position()
         debug_print('[DEBUG] Mouse position (up and down)', mouse_up_pos, self.mouse_down_pos)
 
-        # A drag is detected if the mouse moved significantly.
-        drag_detected = self.mouse_down_pos and \
-                        (abs(mouse_up_pos[0] - self.mouse_down_pos[0]) > 3 or \
-                         abs(mouse_up_pos[1] - self.mouse_down_pos[1]) > 3)
+        # A drag is detected if the mouse moved significantly, suggesting a text selection.
+        # A vertical drag of more than 12 pixels is likely a selection across lines.
+        # A horizontal drag of more than 50 pixels is likely an intentional selection on a single line.
+        drag_detected = False
+        if self.mouse_down_pos:
+            vertical_drag = abs(mouse_up_pos[1] - self.mouse_down_pos[1]) > 12
+            horizontal_drag = abs(mouse_up_pos[0] - self.mouse_down_pos[0]) > 50
+            drag_detected = vertical_drag or horizontal_drag
         
         # Fallback for missed mouse_down events. If mouse_down_pos is None,
         # we still try to capture the selection, as the 'down' event might have been missed by the hook.
