@@ -154,97 +154,105 @@ class RephraseWorker(QtCore.QThread):
         self.selected_text = selected_text
 
     def run(self):
+        #try:
+        debug_print('[DEBUG] api_key and api_url', settings['api_key'], settings['api_url'])
+        openai.api_key = settings['api_key']
+        openai.base_url = settings['api_url']
+
+        lines = self.selected_text.split('\n')
+        reconstructed_lines = list(lines)
+        
+        lines_to_rephrase_map = {}  # Maps original index to the line content
+        for idx, line in enumerate(lines):
+            if line.strip() and not (
+                line.strip().startswith('#') or
+                line.strip().startswith('%') or
+                self.is_code_like(line)
+            ):
+                lines_to_rephrase_map[idx] = line
+
+        if not lines_to_rephrase_map:
+            self.result_ready.emit(self.selected_text, False)
+            return
+
+        lines_to_send = list(lines_to_rephrase_map.values())
+        input_json_str = json.dumps({"lines_to_rephrase": lines_to_send})
+
+        system_prompt = (
+            settings['prompt']
+            #+ " You will be given a JSON object with a key 'lines_to_rephrase' containing a list of strings. "
+            #+ "Your task is to rephrase each string in the list. "
+            #+ "You MUST respond with a JSON object that contains a single key, 'rephrased_lines', "
+            #+ "which is a list of the rephrased strings. "
+            #+ "The returned list must have the exact same number of items as the input list."
+            #+ "Most of the time, these lines are all part of the same email or text. "
+            + "You will be given a JSON object with a key 'lines_to_rephrase' containing a list of strings. "
+            + "These strings are all part of the same email or message and must be understood in that shared context."
+            + "Your task is to rephrase each line while preserving the meaning and tone appropriate to the overall message. "
+            + "Pay attention to how the lines relate to one another to maintain consistency, flow, and coherence."
+            + "You MUST respond with a JSON object containing a single key, 'rephrased_lines', which is a list of the rephrased strings. "
+            + "The output list should have the exact same number of items, in the same order, as the input list."
+        )
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": input_json_str}
+        ]
+        
+        response = openai.chat.completions.create(
+            model=settings.get('model', 'gpt-3.5-turbo'),
+            messages=messages,
+            max_tokens=1024, # Increased max_tokens for JSON overhead
+            temperature=0.7,
+            timeout=20.0, # Increased timeout for potentially longer processing
+            # response_format={"type": "json_object"} # Ideal, but might not be supported by all endpoints
+        )
+        
+        reply_content = response.choices[0].message.content.strip()
+        debug_print('[DEBUG] Raw OpenAI response:\n', reply_content)
+
+        # Extract JSON from the reply, which might be wrapped in markdown
+        match = re.search(r"\{.*\}", reply_content, re.DOTALL)
+        if match:
+            json_str = match.group(0)
+        else:
+            self.result_ready.emit(f"Error: Model did not return valid JSON.\n\n{reply_content}", True)
+            return
+
         try:
-            debug_print('[DEBUG] api_key and api_url', settings['api_key'], settings['api_url'])
-            openai.api_key = settings['api_key']
-            openai.base_url = settings['api_url']
+            response_data = json.loads(json_str)
+            rephrased_lines = response_data.get("rephrased_lines", [])
+        except json.JSONDecodeError:
+            self.result_ready.emit(f"Error: Failed to decode JSON from model response.\n\n{reply_content}", True)
+            return
 
-            lines = self.selected_text.split('\n')
-            reconstructed_lines = list(lines)
-            
-            lines_to_rephrase_map = {}  # Maps original index to the line content
-            for idx, line in enumerate(lines):
-                if not (
-                    line.strip().startswith('#') or
-                    line.strip().startswith('%') or
-                    self.is_code_like(line)
-                ):
-                    lines_to_rephrase_map[idx] = line
-
-            if not lines_to_rephrase_map:
-                self.result_ready.emit(self.selected_text, False)
-                return
-
-            lines_to_send = list(lines_to_rephrase_map.values())
-            input_json_str = json.dumps({"lines_to_rephrase": lines_to_send})
-
-            system_prompt = (
-                settings['prompt']
-                #+ " You will be given a JSON object with a key 'lines_to_rephrase' containing a list of strings. "
-                #+ "Your task is to rephrase each string in the list. "
-                #+ "You MUST respond with a JSON object that contains a single key, 'rephrased_lines', "
-                #+ "which is a list of the rephrased strings. "
-                #+ "The returned list must have the exact same number of items as the input list."
-                #+ "Most of the time, these lines are all part of the same email or text. "
-                + "You will be given a JSON object with a key 'lines_to_rephrase' containing a list of strings. "
-                + "These strings are all part of the same email or message and must be understood in that shared context."
-                + "Your task is to rephrase each line while preserving the meaning and tone appropriate to the overall message. "
-                + "Pay attention to how the lines relate to one another to maintain consistency, flow, and coherence."
-                + "You MUST respond with a JSON object containing a single key, 'rephrased_lines', which is a list of the rephrased strings. "
-                + "The output list should have the exact same number of items, in the same order, as the input list."
+        if not isinstance(rephrased_lines, list) or len(rephrased_lines) != len(lines_to_send):
+            error_msg = (
+                f"Error: Rephrased data is invalid or has a mismatched number of lines "
+                f"({len(rephrased_lines)}) than expected ({len(lines_to_send)})."
             )
+            self.result_ready.emit(f"{error_msg}\n\n{reply_content}", True)
+            return
 
-            messages = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": input_json_str}
-            ]
-            
-            response = openai.chat.completions.create(
-                model=settings.get('model', 'gpt-3.5-turbo'),
-                messages=messages,
-                max_tokens=1024, # Increased max_tokens for JSON overhead
-                temperature=0.7,
-                timeout=20.0, # Increased timeout for potentially longer processing
-                # response_format={"type": "json_object"} # Ideal, but might not be supported by all endpoints
-            )
-            
-            reply_content = response.choices[0].message.content.strip()
-            debug_print('[DEBUG] Raw OpenAI response:\n', reply_content)
-
-            # Extract JSON from the reply, which might be wrapped in markdown
-            match = re.search(r"\{.*\}", reply_content, re.DOTALL)
-            if match:
-                json_str = match.group(0)
-            else:
-                self.result_ready.emit(f"Error: Model did not return valid JSON.\n\n{reply_content}", True)
-                return
-
+        # Reconstruct the text
+        rephrased_lines_iter = iter(rephrased_lines)
+        debug_print('[DEBUG] rephrased_lines_iter: ', rephrased_lines_iter)
+        for index in lines_to_rephrase_map.keys():
             try:
-                response_data = json.loads(json_str)
-                rephrased_lines = response_data.get("rephrased_lines", [])
-            except json.JSONDecodeError:
-                self.result_ready.emit(f"Error: Failed to decode JSON from model response.\n\n{reply_content}", True)
-                return
+                rephrased_line = next(rephrased_lines_iter)
+                debug_print('[DEBUG] reconstructed_lines[index]: ', reconstructed_lines[index])
+                debug_print('[DEBUG] rephrased_line: ', rephrased_line)
+                reconstructed_lines[index] = rephrased_line
+            except StopIteration:
+                debug_print(f"[DEBUG] StopIteration at index {index}. Mismatch between lines to rephrase and rephrased lines.")
+                break
 
-            '''if not isinstance(rephrased_lines, list) or len(rephrased_lines) != len(lines_to_send):
-                error_msg = (
-                    f"Error: Rephrased data is invalid or has a mismatched number of lines "
-                    f"({len(rephrased_lines)}) than expected ({len(lines_to_send)})."
-                )
-                self.result_ready.emit(f"{error_msg}\n\n{reply_content}", True)
-                return'''
+        final_text = '\n'.join(reconstructed_lines)
+        self.result_ready.emit(final_text, False)
 
-            # Reconstruct the text
-            rephrased_lines_iter = iter(rephrased_lines)
-            for index in lines_to_rephrase_map.keys():
-                reconstructed_lines[index] = next(rephrased_lines_iter)
-
-            final_text = '\n'.join(reconstructed_lines)
-            self.result_ready.emit(final_text, False)
-
-        except Exception as e:
-            debug_print('[DEBUG] error', e)
-            self.result_ready.emit(f"Error: {str(e)}", True)
+        #except Exception as e:
+        #debug_print('[DEBUG] error', e)
+        #self.result_ready.emit(f"Error: {str(e)}", True)
 
     def is_code_like(self, line):
         stripped = line.strip()
@@ -510,19 +518,7 @@ class SelectionListener(QtCore.QObject):
         keyboard.press_and_release('ctrl+c')
 
         text = ''
-
         text = pyperclip.paste()
-        # Conditionally clean clipboard text based on its format.
-        if '\r\n\r\n\r\n\r\n' in text:
-             # This sequence is highly specific to Outlook's clipboard format.
-            debug_print('[DEBUG] Outlook-style CRLF detected. Applying special cleaning.')
-            text = text.replace('\r\n\r\n\r\n\r\n', '\n\n') # Paragraphs
-            text = text.replace('\r\n\r\n', '\n') # Line breaks
-            text = text.replace('\r\n', '\n') # Cleanup
-        else:
-            # Standard text from apps like Notepad. Just normalize line endings.
-            debug_print('[DEBUG] Standard CRLF detected. Applying simple cleaning.')
-            text = text.replace('\r\n', '\n')
         
 
     def show_rephrase_overlay(self, text, source_hwnd):
