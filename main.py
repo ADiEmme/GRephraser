@@ -159,11 +159,15 @@ class RephraseWorker(QtCore.QThread):
             openai.api_key = settings['api_key']
             openai.base_url = settings['api_url']
 
-            lines = self.selected_text.split('\n')
+            # Normalize line endings and split into lines
+            normalized_text = self.selected_text.replace('\r\n', '\n').replace('\r', '\n')
+            lines = normalized_text.split('\n')
             reconstructed_lines = list(lines)
             
             lines_to_rephrase_map = {}  # Maps original index to the line content
             for idx, line in enumerate(lines):
+                # Only rephrase lines that have actual content (not just whitespace)
+                # and are not comments or code-like
                 if line.strip() and not (
                     line.strip().startswith('#') or
                     line.strip().startswith('%') or
@@ -176,6 +180,8 @@ class RephraseWorker(QtCore.QThread):
                 return
 
             lines_to_send = list(lines_to_rephrase_map.values())
+            debug_print(f'[DEBUG] Total lines: {len(lines)}, Lines to rephrase: {len(lines_to_send)}')
+            debug_print(f'[DEBUG] Lines to rephrase indices: {list(lines_to_rephrase_map.keys())}')
             input_json_str = json.dumps({"lines_to_rephrase": lines_to_send})
 
             system_prompt = (
@@ -226,13 +232,45 @@ class RephraseWorker(QtCore.QThread):
                 self.result_ready.emit(f"Error: Failed to decode JSON from model response.\n\n{reply_content}", True)
                 return
 
-            if not isinstance(rephrased_lines, list) or len(rephrased_lines) != len(lines_to_send):
-                error_msg = (
-                    f"Error: Rephrased data is invalid or has a mismatched number of lines "
-                    f"({len(rephrased_lines)}) than expected ({len(lines_to_send)})."
-                )
+            # Clean up rephrased lines - remove any \r characters and ensure proper line structure
+            if isinstance(rephrased_lines, list):
+                cleaned_rephrased_lines = []
+                for line in rephrased_lines:
+                    if isinstance(line, str):
+                        # Remove \r characters and split on \n if the API combined lines
+                        cleaned_line = line.replace('\r', '').strip()
+                        # If a line contains \n, it means the API combined multiple lines
+                        if '\n' in cleaned_line:
+                            cleaned_rephrased_lines.extend([l.strip() for l in cleaned_line.split('\n') if l.strip()])
+                        else:
+                            cleaned_rephrased_lines.append(cleaned_line)
+                rephrased_lines = cleaned_rephrased_lines
+
+            debug_print(f'[DEBUG] Cleaned rephrased lines count: {len(rephrased_lines)}')
+            debug_print(f'[DEBUG] Expected lines count: {len(lines_to_send)}')
+
+            if not isinstance(rephrased_lines, list):
+                error_msg = "Error: Rephrased data is not a valid list."
+                debug_print(f'[DEBUG] Rephrased lines: {rephrased_lines}')
                 self.result_ready.emit(f"{error_msg}\n\n{reply_content}", True)
                 return
+            
+            # Handle mismatched line counts by padding or truncating as needed
+            if len(rephrased_lines) != len(lines_to_send):
+                debug_print(f'[DEBUG] Line count mismatch: got {len(rephrased_lines)}, expected {len(lines_to_send)}')
+                debug_print(f'[DEBUG] Rephrased lines: {rephrased_lines}')
+                debug_print(f'[DEBUG] Lines to send: {lines_to_send}')
+                
+                if len(rephrased_lines) < len(lines_to_send):
+                    # If we have fewer rephrased lines, pad with original lines
+                    missing_count = len(lines_to_send) - len(rephrased_lines)
+                    debug_print(f'[DEBUG] Padding with {missing_count} original lines')
+                    # Add the missing original lines at the end
+                    rephrased_lines.extend(lines_to_send[-missing_count:])
+                elif len(rephrased_lines) > len(lines_to_send):
+                    # If we have too many rephrased lines, truncate
+                    debug_print(f'[DEBUG] Truncating {len(rephrased_lines) - len(lines_to_send)} extra lines')
+                    rephrased_lines = rephrased_lines[:len(lines_to_send)]
 
             # Reconstruct the text
             rephrased_lines_iter = iter(rephrased_lines)
