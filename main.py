@@ -161,6 +161,14 @@ class RephraseWorker(QtCore.QThread):
 
             # Normalize line endings and split into lines
             normalized_text = self.selected_text.replace('\r\n', '\n').replace('\r', '\n')
+            
+            # Sanitize input: collapse excessive newlines from Salesforce (3+ consecutive newlines → 2)
+            # This preserves intentional spacing (0-1 blank lines) while removing Salesforce artifacts
+            while '\n\n\n' in normalized_text:
+                normalized_text = normalized_text.replace('\n\n\n', '\n\n')
+            
+            debug_print(f'[DEBUG] Original text length: {len(self.selected_text)}, Sanitized length: {len(normalized_text)}')
+            
             lines = normalized_text.split('\n')
             reconstructed_lines = list(lines)
             
@@ -297,7 +305,7 @@ class RephraseWorker(QtCore.QThread):
                     debug_print(f'[DEBUG] Truncating {len(rephrased_lines) - len(lines_to_send)} extra lines')
                     rephrased_lines = rephrased_lines[:len(lines_to_send)]
 
-            # Reconstruct the text
+            # Reconstruct the text - preserve exact original structure
             rephrased_lines_iter = iter(rephrased_lines)
             debug_print('[DEBUG] rephrased_lines_iter: ', rephrased_lines_iter)
             for index in lines_to_rephrase_map.keys():
@@ -310,7 +318,11 @@ class RephraseWorker(QtCore.QThread):
                     debug_print(f"[DEBUG] StopIteration at index {index}. Mismatch between lines to rephrase and rephrased lines.")
                     break
 
+            # Join lines preserving exact original structure
             final_text = '\n'.join(reconstructed_lines)
+            
+            debug_print(f'[DEBUG] Final text length: {len(final_text)} characters')
+            debug_print(f'[DEBUG] Final text preview: {final_text[:200]}...')
             self.result_ready.emit(final_text, False)
 
         except Exception as e:
