@@ -164,16 +164,47 @@ class RephraseWorker(QtCore.QThread):
             lines = normalized_text.split('\n')
             reconstructed_lines = list(lines)
             
+            # Track code block state
+            in_code_block = False
+            
             lines_to_rephrase_map = {}  # Maps original index to the line content
             for idx, line in enumerate(lines):
-                # Only rephrase lines that have actual content (not just whitespace)
-                # and are not comments or code-like
-                if line.strip() and not (
-                    line.strip().startswith('#') or
-                    line.strip().startswith('%') or
-                    self.is_code_like(line)
-                ):
+                # Check for code block markers (with or without language identifier)
+                stripped = line.strip()
+                if stripped.startswith('```'):
+                    in_code_block = not in_code_block
+                    debug_print(f'[DEBUG] Line {idx}: Code block marker detected, in_code_block={in_code_block}')
+                    continue
+                
+                # Skip lines inside code blocks
+                if in_code_block:
+                    debug_print(f'[DEBUG] Line {idx}: Skipped (inside code block)')
+                    continue
+                
+                # Skip empty lines
+                if not stripped:
+                    continue
+                
+                # Check for protected patterns
+                skip_reason = None
+                if stripped.startswith('#'):
+                    skip_reason = 'starts with #'
+                elif stripped.startswith('%'):
+                    skip_reason = 'starts with %'
+                elif stripped.startswith('>'):
+                    skip_reason = 'starts with >'
+                elif self.contains_inline_code(line):
+                    skip_reason = 'contains inline code (backticks)'
+                elif self.contains_quoted_text(line):
+                    skip_reason = 'contains quoted text'
+                elif self.is_code_like(line):
+                    skip_reason = 'is code-like'
+                
+                if skip_reason:
+                    debug_print(f'[DEBUG] Line {idx}: Skipped ({skip_reason})')
+                else:
                     lines_to_rephrase_map[idx] = line
+                    debug_print(f'[DEBUG] Line {idx}: Will rephrase')
 
             if not lines_to_rephrase_map:
                 self.result_ready.emit(self.selected_text, False)
@@ -186,16 +217,10 @@ class RephraseWorker(QtCore.QThread):
 
             system_prompt = (
                 settings['prompt']
-                #+ " You will be given a JSON object with a key 'lines_to_rephrase' containing a list of strings. "
-                #+ "Your task is to rephrase each string in the list. "
-                #+ "You MUST respond with a JSON object that contains a single key, 'rephrased_lines', "
-                #+ "which is a list of the rephrased strings. "
-                #+ "The returned list must have the exact same number of items as the input list."
-                #+ "Most of the time, these lines are all part of the same email or text. "
-                + "You will be given a JSON object with a key 'lines_to_rephrase' containing a list of strings. "
-                + "These strings are all part of the same email or message and must be understood in that shared context."
+                + " You will be given a JSON object with a key 'lines_to_rephrase' containing a list of strings. "
+                + "These strings are all part of the same email or message and must be understood in that shared context. "
                 + "Your task is to rephrase each line while preserving the meaning and tone appropriate to the overall message. "
-                + "Pay attention to how the lines relate to one another to maintain consistency, flow, and coherence."
+                + "Pay attention to how the lines relate to one another to maintain consistency, flow, and coherence. "
                 + "You MUST respond with a JSON object containing a single key, 'rephrased_lines', which is a list of the rephrased strings. "
                 + "The output list should have the exact same number of items, in the same order, as the input list."
             )
@@ -302,6 +327,30 @@ class RephraseWorker(QtCore.QThread):
             ('print(' in line) or
             (stripped.startswith('for ') or stripped.startswith('while ') or stripped.startswith('if '))
         )
+    
+    def contains_inline_code(self, line):
+        """Check if line contains inline code (text within single backticks)."""
+        # Count unescaped backticks
+        backtick_count = 0
+        i = 0
+        while i < len(line):
+            if line[i] == '`' and (i == 0 or line[i-1] != '\\'):
+                backtick_count += 1
+            i += 1
+        # If there are at least 2 backticks (opening and closing pair), it contains inline code
+        return backtick_count >= 2
+    
+    def contains_quoted_text(self, line):
+        """Check if line contains text enclosed in double quotes."""
+        # Count the number of unescaped quotes
+        quote_count = 0
+        i = 0
+        while i < len(line):
+            if line[i] == '"' and (i == 0 or line[i-1] != '\\'):
+                quote_count += 1
+            i += 1
+        # If there are at least 2 quotes (opening and closing), consider it as containing quoted text
+        return quote_count >= 2
 
 class RephraseOverlay(QtWidgets.QWidget):
     def __init__(self, selected_text, source_hwnd, parent=None):
